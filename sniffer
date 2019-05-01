@@ -1,0 +1,150 @@
+#!/usr/bin/perl -w
+# nirosys (at) nirostasis (dot) net
+#
+# A basic sniffer, understands IPv4,TCP,ICMP, and UDP.
+# Prints out the source, and destination IP, ports if UDP
+# or TCP, and can differentiate Echo Request And Replies
+# for ICMP.
+#
+
+use strict;
+use Net::Pcap;
+
+my $pcap_t = undef;
+my $pkt_cnt = 0;
+
+$SIG{INT} = sub {
+               print "Caught SIGINT, cleaning up and ending...\n";
+               Net::Pcap::close($pcap_t);
+               print "Caught ${pkt_cnt} packets..\n";
+               exit;
+            };
+
+# callback ################################################ {{{
+sub callback {
+   my ($user_data, $hdr, $pkt) = @_;
+   $pkt_cnt++;
+   my (%ether) = decodeEthernet($pkt);
+   if ($ether{type} eq "0800") {
+      my %ipv4 = decodeIPv4($ether{payload}); 
+      $ipv4{src} = ip_ntoa($ipv4{src});
+      $ipv4{dst} = ip_ntoa($ipv4{dst});
+      if ($ipv4{prot} == 6) {
+         my %tcphdr = decodeTCP($ipv4{payload});
+         print "$ipv4{src}:$tcphdr{sport} => $ipv4{dst}:$tcphdr{dport} (TCP)\n";
+      }
+      elsif ($ipv4{prot} == 11) {
+         my %udphdr = decodeUDP($ipv4{payload});
+         print "$ipv4{src}:$udphdr{sport} => $ipv4{dst}:$udphdr{dport} (UDP)\n";
+      }
+      elsif ($ipv4{prot} == 1) {
+         my %icmphdr = decodeICMP($ipv4{payload});
+         print "$ipv4{src} => $ipv4{dst} (ICMP: ".(($icmphdr{type} == 0) ? "Echo Reply":
+                                                  (($icmphdr{type} == 8) ? "Echo Request":
+                                                         "Unknown")).")\n";
+                                                
+      }
+   }
+}
+# }}}
+
+# ip_ntoa ################################################# {{{
+sub ip_ntoa {
+   my $ip = shift;
+
+   $ip = pack("N",$ip);
+   my @octets = unpack("CCCC",$ip);
+   return join(".",@octets);
+}
+# }}}
+
+# decodeICMP ############################################## {{{
+sub decodeICMP {
+   my $pkt = shift;
+
+   my @icmphdr = unpack("ccnH*",$pkt);
+   $icmphdr[3] = pack("H*",$icmphdr[3]);
+
+   return (type=>$icmphdr[0], code=>$icmphdr[1], chksum=>$icmphdr[2], payload=>$icmphdr[3]);
+}
+# }}}
+
+# decodeUDP ############################################### {{{
+sub decodeUDP {
+   my $pkt = shift;
+
+   my @udphdr = unpack("nnnnH*",$pkt);
+   $udphdr[4] = pack("H*",$udphdr[4]);
+
+   return (sport=>$udphdr[0], dport=>$udphdr[1], len=>$udphdr[2], chksum=>$udphdr[3],
+           payload=>$udphdr[4]);
+}
+# }}}
+
+# decodeTCP ############################################### {{{
+sub decodeTCP {
+   my $pkt = shift;
+
+   my @tcphdr = unpack("nnNNccnnnH*",$pkt);
+   $tcphdr[9] = pack("H*",$tcphdr[9]);
+  
+   return ( sport=>$tcphdr[0], dport=>$tcphdr[1], seq=>$tcphdr[2], ack=>$tcphdr[3],
+            d_off=>$tcphdr[4], ecn_control=>$tcphdr[5], window=>$tcphdr[6],
+            chksum=>$tcphdr[7], urg=>$tcphdr[8] );
+}
+# }}}
+
+# decodeIPv4 ############################################## {{{
+sub decodeIPv4 {
+   my $pkt = shift;
+
+   my @iphdr = unpack("CCnnnCCnNNH*",$pkt);
+   $iphdr[10] = pack("H*",$iphdr[10]);
+   
+   my %ipv4 = ( vihl=>$iphdr[0], tos=>$iphdr[1], tlen=>$iphdr[2], id=>$iphdr[3],
+                f_off=>$iphdr[4], ttl=>$iphdr[5], prot=>$iphdr[6], chk=>$iphdr[7],
+                src=>$iphdr[8], dst=>$iphdr[9], payload=>$iphdr[10] );
+
+
+   my $optlen = (($iphdr[0] & 0x0F)*4)-20;
+   if ($optlen == 0) { # weak IP Options extraction.. I'll make it better.
+      $optlen = $optlen * 2;
+      my ($options,$rest) = unpack("H${optlen}H*",$ipv4{payload});
+      $rest = pack("H*",$rest);
+      $ipv4{options} = $options;
+      $ipv4{payload} = $rest;
+   }
+   return %ipv4;
+}
+# }}}
+
+# decodeEthernet ########################################## {{{
+sub decodeEthernet {
+   my $pkt = shift;
+
+   my ($src,$dst,$type,$rest) = unpack("H12H12H4H*",$pkt);
+   $rest = pack("H*",$rest);
+   return ( source=>$src,dest=>$dst,type=>$type,payload=>$rest);
+}
+# }}}
+
+# main #################################################### {{{
+sub main {
+   my $err = undef;
+   my $dev = Net::Pcap::lookupdev(\$err);
+
+   $pcap_t = Net::Pcap::open_live($dev,1024,1,1,\$err);
+   if (!defined($pcap_t)) {
+      print "Error: ${err}\n";
+      exit;
+   }
+   if ($#ARGV == 0) { 
+      my $filter_t = undef;
+      Net::Pcap::compile($pcap_t,\$filter_t,$ARGV[0],1,0xffffff00); 
+      Net::Pcap::setfilter($pcap_t,$filter_t);
+   }
+   Net::Pcap::loop($pcap_t,0,\&callback,undef);
+}
+# }}}
+&main;
+
